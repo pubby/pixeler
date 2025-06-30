@@ -26,7 +26,7 @@ OBJDIR:=obj
 IMGDIR:=dither
 INCS:=-I$(SRCDIR)
 
-VERSION := "0.5"
+VERSION := "1.0"
 GIT_COMMIT := "$(shell git describe --abbrev=8 --dirty --always)"
 
 WXCONFIG := wx-config
@@ -77,9 +77,14 @@ OBJS := $(foreach o,$(SRCS),$(OBJDIR)/$(o:.cpp=.o))
 DEPS := $(foreach o,$(SRCS),$(OBJDIR)/$(o:.cpp=.d))
 DATA := $(foreach o,$(IMGS),$(SRCDIR)/$(o:.png=.png.inc))
 
+ifeq ($(OS),Windows_NT)
+# This file should be generated using windres
+	$(OBJS) += $(OBJDIR)/wc.o
+endif
+
 pixeler: $(OBJS)
 	echo 'LINK'
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(OBJDIR)/wc.o $(LDLIBS) 
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS) 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(DATA)
 	$(compile)
 $(OBJDIR)/%.d: $(SRCDIR)/%.cpp $(DATA)

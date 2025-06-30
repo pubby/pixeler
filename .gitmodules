@@ -1,0 +1,3 @@
+[submodule "src/flat"]
+	path = src/flat
+	url = git@github.com:pubby/flat.git
