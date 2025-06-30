@@ -79,7 +79,7 @@ DATA := $(foreach o,$(IMGS),$(SRCDIR)/$(o:.png=.png.inc))
 
 pixeler: $(OBJS)
 	echo 'LINK'
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS) 
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(OBJDIR)/wc.o $(LDLIBS) 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(DATA)
 	$(compile)
 $(OBJDIR)/%.d: $(SRCDIR)/%.cpp $(DATA)

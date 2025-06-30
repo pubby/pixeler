@@ -131,7 +131,7 @@ void model_t::update()
         return dst_nes[x + y*w];
     };
 
-    float const dscale = 1.0f / std::powf(1.11f, dither_scale);
+    float const dscale = 1.0f / std::pow(1.11f, dither_scale);
     float const iscale = (dither_cutoff + 8) / 8.0f;
 
     auto const get_src = [&](unsigned x, unsigned y) -> rgb_t

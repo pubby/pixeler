@@ -254,10 +254,7 @@ public:
             SetBackgroundColour(wxColour(rgb.r, rgb.g, rgb.b));
         }
         else
-        {
-            SetBackgroundColour(wxColour(0, 0, 0, 0));
-            ClearBackground();
-        }
+            SetBackgroundColour(wxNullColour);
     }
 
     color_knob_t* knob;
@@ -589,7 +586,7 @@ class frame_t : public wxFrame
 {
 public:
     frame_t()
-    : wxFrame(nullptr, wxID_ANY, "NES Pixeler", wxDefaultPosition, wxSize(1024, 768))
+    : wxFrame(nullptr, wxID_ANY, "NES Pixeler", wxDefaultPosition, wxSize(1024, 768), wxDEFAULT_FRAME_STYLE | wxFULL_REPAINT_ON_RESIZE)
     {
         SetSize(wxSize(1024, 768));
         wxMenu* menu_file = new wxMenu;
@@ -743,9 +740,9 @@ public:
         }
 
         wxBoxSizer* sizer = new wxBoxSizer(wxHORIZONTAL);
-        sizer->Add(l_panel, wxSizerFlags().Border(wxALL));
-        sizer->Add(r_panel, wxSizerFlags().Expand().Border(wxTOP));
-        SetSizer(sizer);
+        sizer->Add(l_panel, 0, wxEXPAND | wxALL, 0);
+        sizer->Add(r_panel, 1, wxEXPAND | wxTOP, 0);
+        SetSizerAndFit(sizer);
 
         Bind(wxEVT_MENU, &frame_t::on_exit, this, wxID_EXIT);
         Bind(wxEVT_MENU, &frame_t::on_open, this, wxID_OPEN);
@@ -759,6 +756,7 @@ public:
 
         SetBackgroundStyle(wxBG_STYLE_PAINT);
 
+	Layout();
         Update();
     }
  

@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <vector>
 #include <charconv>
+#include <cmath>
 
 #include <wx/wx.h>
 
@@ -32,8 +33,8 @@ constexpr unsigned MAP_SIZE = 4;
 struct color_knob_t
 {
     std::uint8_t nes_color = 0xFF;
-    std::array<rgb_t, MAP_SIZE> map_colors;
-    std::array<bool, MAP_SIZE> map_enable;
+    std::array<rgb_t, MAP_SIZE> map_colors = {};
+    std::array<bool, MAP_SIZE> map_enable = {};
     int greed = 0;
     int bleed = 0;
 
@@ -61,8 +62,8 @@ struct color_knob_t
         return true;
     }
 
-    float greedf() const { return std::powf(1.1, -greed); }
-    float bleedf() const { return std::powf(2.0, bleed); }
+    float greedf() const { return std::pow(1.1, -greed); }
+    float bleedf() const { return std::pow(2.0, bleed); }
 
     auto operator<=>(color_knob_t const&) const = default;
 };
@@ -101,8 +102,8 @@ struct model_t
     int dither_scale = 0;
     int dither_cutoff = 0;
 
-    std::array<wxBitmap, 65> color_bitmaps; 
-    std::array<color_knob_t, 16> color_knobs;
+    std::array<wxBitmap, 65> color_bitmaps = {}; 
+    std::array<color_knob_t, 16> color_knobs = {};
 
     wxStatusBar* status_bar = nullptr;
 
