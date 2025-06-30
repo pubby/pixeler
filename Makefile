@@ -1,4 +1,4 @@
-.PHONY: all debug release cleandeps clean run
+.PHONY: all debug release cleandeps clean run images
 debug: pixeler
 release: pixeler
 static: pixeler
@@ -85,9 +85,10 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.cpp $(DATA)
 $(OBJDIR)/%.d: $(SRCDIR)/%.cpp $(DATA)
 	$(deps)
 
-# You can remove these lines if you don't have 'bin2c' installed:
+ifeq ($(MAKECMDGOALS), images)
 $(SRCDIR)/%.png.inc: $(IMGDIR)/%.png
 	bin2c -o $@ $<
+endif
 
 ##########################################################################	
 
