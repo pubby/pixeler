@@ -13,8 +13,7 @@
 #include <map>
 
 #include "model.hpp"
-#include "convert.hpp"
-#include "id.hpp"
+#include "graphics.hpp"
 
 enum
 {
@@ -592,7 +591,7 @@ public:
     frame_t()
     : wxFrame(nullptr, wxID_ANY, "Pixeler", wxDefaultPosition, wxSize(1024, 768))
     {
-        SetMinSize(wxSize(1024, 768));
+        SetSize(wxSize(1024, 768));
         wxMenu* menu_file = new wxMenu;
         menu_file->Append(wxID_OPEN, "&Open Image\tCTRL+O");
         menu_file->Append(wxID_SAVE, "&Save Image\tCTRL+S");
@@ -758,10 +757,8 @@ public:
         Bind(wxEVT_MENU, &frame_t::on_paste, this, wxID_PASTE);
         Bind(wxEVT_UPDATE_UI, &frame_t::on_update, this);
 
-        Connect(wxEVT_PAINT, wxPaintEventHandler(frame_t::on_paint), 0, this);
         SetBackgroundStyle(wxBG_STYLE_PAINT);
 
-        SetSize(800, 800);
         Update();
     }
  

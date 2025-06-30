@@ -5,7 +5,6 @@
 #include "flat/flat_map.hpp"
 #include "flat/flat_set.hpp"
 
-#include "convert.hpp"
 #include "z1.png.inc"
 #include "cz332.png.inc"
 #include "brix.png.inc"
@@ -125,7 +124,6 @@ void model_t::update()
     unsigned char* const src_ptr = scaled.GetData();
     unsigned char* const dst_ptr = output_image.GetData();
     unsigned char* const dither_ptr = dither_image.GetData();
-    unsigned char* const normal_ptr = dither_image.GetData();
     std::vector<std::uint8_t> dst_nes(w * h);
 
     auto const at_dst_nes = [&](int x, int y) -> std::uint8_t&
@@ -156,18 +154,8 @@ void model_t::update()
         return rgb_t{ dither_ptr[i+0], dither_ptr[i+1], dither_ptr[i+2] };
     };
 
-    auto const get_normal = [&](unsigned x, unsigned y) -> rgb_t
-    {
-        unsigned i = ((x % dw)+(y % dh)*dw)*3;
-        return rgb_t{ dither_ptr[i+0], dither_ptr[i+1], dither_ptr[i+2] };
-    };
-
     auto const get_dither_lerp = [&](unsigned x, unsigned y) -> rgb_t
     {
-        float nx = normal_image.GetRed(x, y) - 128.0f;
-        float ny = normal_image.GetGreen(x, y) - 128.0f;
-        float nz = normal_image.GetBlue(x, y);
-
         float fx = float(x) / (iscale);
         float fy = float(y) / (iscale);
 
