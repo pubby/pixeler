@@ -7,8 +7,15 @@
 struct [[gnu::packed]] rgb_t
 {
     unsigned char r, g, b;
+    auto operator<=>(rgb_t const&) const = default;
 };
 static_assert(sizeof(rgb_t) == 3);
+
+struct qerr_t
+{
+    int r, g, b;
+    auto operator<=>(qerr_t const&) const = default;
+};
 
 constexpr rgb_t RED = { 255, 0, 0 };
 constexpr rgb_t BLACK = { 0, 0, 0 };
@@ -16,12 +23,19 @@ constexpr rgb_t WHITE = { 255, 255, 255 };
 constexpr rgb_t GREY = { 127, 127, 127 };
 inline rgb_t invert(rgb_t a) { return { 255 - a.r, 255 - a.g, 255 - a.b }; }
 
-inline unsigned distance(rgb_t a, rgb_t b)
+inline qerr_t qerr(rgb_t a, rgb_t b)
 {
-    int const x = int(a.r) - int(b.r);
-    int const y = int(a.g) - int(b.g);
-    int const z = int(a.b) - int(b.b);
-    return std::sqrt(x*x + y*y + z*z);
+    return { int(a.r) - int(b.r), int(a.g) - int(b.g), int(a.b) - int(b.b) };
+}
+
+inline float distance(qerr_t q)
+{
+    return std::sqrt(float(q.r*q.r + q.g*q.g + q.b*q.b));
+}
+
+inline float distance(rgb_t a, rgb_t b)
+{
+    return distance(qerr(a, b));
 }
 
 inline int hue(rgb_t a) 

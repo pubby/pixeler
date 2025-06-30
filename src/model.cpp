@@ -1,9 +1,15 @@
 #include "model.hpp"
 
-#include "convert.hpp"
+#include <wx/mstream.h>
 
 #include "flat/flat_map.hpp"
 #include "flat/flat_set.hpp"
+
+#include "convert.hpp"
+#include "z1.png.inc"
+#include "cz332.png.inc"
+#include "brix.png.inc"
+#include "custom.png.inc"
 
 model_t::model_t()
 {
@@ -32,18 +38,47 @@ model_t::model_t()
             alloc[(x+y*W)*3] = 0xFF;
     wxImage image(W, H, alloc);
     color_bitmaps[64] = wxBitmap(image);
+
+    // Read the dithers:
+ 
+    auto const make_img = [&](char const* name, unsigned char const* data, std::size_t size) -> wxImage
+    {
+        wxMemoryInputStream stream(data, size);
+        wxImage img;
+        if(!img.LoadFile(stream, wxBITMAP_TYPE_PNG))
+            throw std::runtime_error(name);
+        return img;
+    };
+
+#define MAKE_IMG(x) make_img(#x, x, x##_size)
+    dither_images[0] = MAKE_IMG(dither_z1_png);
+    dither_images[1] = MAKE_IMG(dither_cz332_png);
+    dither_images[2] = MAKE_IMG(dither_brix_png);
 }
 
 void model_t::update()
 {
+    if(!base_image.IsOk())
+        return;
+
+    // Create the picker image
+    picker_image = base_image.Copy();
+    if(picker_image.IsOk())
+    {
+        picker_image.Rescale(512, 512, wxIMAGE_QUALITY_NEAREST);
+        picker_bitmap = wxBitmap(picker_image);
+    }
+    else
+        std::fprintf(stderr, "Bad picker image\n");
+
     // Scale the base image:
-    wxImage scaled = base_image;
+    wxImage scaled = base_image.Copy();
     if(scaled.IsOk())
     {
         scaled.Rescale(w, h, wxIMAGE_QUALITY_BOX_AVERAGE);
         base_bitmap = wxBitmap(scaled);
 
-        output_image = scaled;
+        output_image = scaled.Copy();
         if(!output_image.IsOk())
         {
             std::fprintf(stderr, "Bad output image\n");
@@ -51,118 +86,60 @@ void model_t::update()
         }
     }
     else
+    {
+        std::fprintf(stderr, "Bad scaled image\n");
         return;
+    }
 
     // Temporary output:
     if(output_image.IsOk())
         output_bitmap = wxBitmap(output_image);
+    else
+        std::fprintf(stderr, "Bad output bitmap\n");
 
-    // Calculate unique color sets:
-
-    fc::vector_map<fc::vector_set<color_knob_t>, unsigned> map;
-
-    for(unsigned s = 0; s < 4; s += 1)
-    {
-        for(unsigned b = 0; b < 4; b += 1)
-        {
-            fc::vector_set<color_knob_t> set;
-
-            auto const& add_color = [&](color_knob_t const& knob)
-            {
-                if(knob.color < 64)
-                    set.insert(knob);
-            };
-
-            add_color(color_knobs[24]);
-            unsigned const pre_size = set.size();
-
-            for(unsigned i = 0; i < 3; i += 1)
-            {
-                add_color(color_knobs[ 0 + b*3 + i]);
-                add_color(color_knobs[12 + s*3 + i]);
-            }
-
-            unsigned const post_size = set.size();
-
-            if(!set.empty() && pre_size != post_size)
-                map.emplace(std::move(set), b + s*4);
-        }
-    }
-
-    for(auto it = map.begin(); it != map.end();)
-    {
-        for(auto jt = map.begin(); jt != map.end(); jt += 1)
-        {
-            if(it == jt)
-                continue;
-
-            for(color_knob_t const& knob : it->first)
-            {
-                if(jt->first.count(knob) == 0)
-                    goto next_iter;
-            }
-
-            it = map.erase(it);
-            goto erased;
-        }
-
-    next_iter:
-        ++it;
-    erased:;
-    }
-
-    if(map.empty())
-    {
-        std::fprintf(stderr, "Empty map.\n");
-        return;
-    }
+    // Dither size
+    auto const& dither_image = dither_images[std::max(dither_style, FIRST_MASK) - FIRST_MASK];
+    unsigned const dw = dither_image.GetWidth();  // dither width
+    unsigned const dh = dither_image.GetHeight(); // dither height
 
     // To downscale the source image, we'll compare pixels from regions:
 
     unsigned bw = base_image.GetWidth();  // base width
     unsigned bh = base_image.GetHeight(); // base height
-    unsigned rw = bw / w; // region width
-    unsigned rh = bh / h; // region height
+    unsigned rw = std::max<unsigned>(1, bw / w); // region width
+    unsigned rh = std::max<unsigned>(1, bh / h); // region height
 
-    if(rw == 0 || rh == 0) // TODO: handle source image smaller than destination
-    {
-        std::fprintf(stderr, "Zero region %i %i %i %i.\n", bw, bh, w, h);
-        return;
-    }
+    scaled = base_image.Copy();
+    scaled.Rescale(rw * w, rh * h);
+
+    bw = scaled.GetWidth();
+    bh = scaled.GetHeight();
 
     // Then identify the best color set for each 8x8 region:
 
-    auto const pixel_score = [](std::uint8_t color, rgb_t rgb) -> float
-    {
-        rgb_t const nes = nes_colors[color];
-        unsigned score = 0;
-        score += (nes.r - rgb.r) * (nes.r - rgb.r);
-        score += (nes.g - rgb.g) * (nes.g - rgb.g);
-        score += (nes.b - rgb.b) * (nes.b - rgb.b);
-        int hue_diff = hue(nes) - hue(rgb);
-        score += std::abs(hue_diff);
-        return std::sqrt(float(score));
-    };
-
-    std::vector<float> scores(map.size());
+    std::vector<qerr_t> qerrs(w * h);
     std::vector<float> color_scores;
     std::vector<float> region_scores;
-    std::vector<float> attr_scores;
-    std::vector<std::array<std::uint8_t, 64>> chosen_pixels(map.size());
-    unsigned char const* const src_ptr = base_image.GetData();
-    unsigned char const* const scaled_ptr = scaled.GetData();
+    std::vector<qerr_t> region_q;
+    std::vector<int> region_q_count;
+    unsigned char* const src_ptr = scaled.GetData();
     unsigned char* const dst_ptr = output_image.GetData();
+    unsigned char* const dither_ptr = dither_image.GetData();
+    unsigned char* const normal_ptr = dither_image.GetData();
+    std::vector<std::uint8_t> dst_nes(w * h);
+
+    auto const at_dst_nes = [&](int x, int y) -> std::uint8_t&
+    {
+        return dst_nes[x + y*w];
+    };
+
+    float const dscale = 1.0f / std::powf(1.11f, dither_scale);
+    float const iscale = (dither_cutoff + 8) / 8.0f;
 
     auto const get_src = [&](unsigned x, unsigned y) -> rgb_t
     {
         unsigned i = (x+y*bw)*3;
         return rgb_t{ src_ptr[i+0], src_ptr[i+1], src_ptr[i+2] };
-    };
-
-    auto const get_scaled = [&](unsigned x, unsigned y) -> rgb_t
-    {
-        unsigned i = (x+y*w)*3;
-        return rgb_t{ scaled_ptr[i+0], scaled_ptr[i+1], scaled_ptr[i+2] };
     };
 
     auto const set_dst = [&](unsigned x, unsigned y, rgb_t color)
@@ -173,62 +150,491 @@ void model_t::update()
         dst_ptr[i+2] = color.b;
     };
 
-    for(unsigned iy = 0; iy < h; iy += 8)
-    for(unsigned ix = 0; ix < w; ix += 8)
+    auto const get_dither = [&](unsigned x, unsigned y) -> rgb_t
     {
-        attr_scores.clear();
-        attr_scores.resize(map.size());
+        unsigned i = ((x % dw)+(y % dh)*dw)*3;
+        return rgb_t{ dither_ptr[i+0], dither_ptr[i+1], dither_ptr[i+2] };
+    };
 
-        for(auto const& pair : map)
+    auto const get_normal = [&](unsigned x, unsigned y) -> rgb_t
+    {
+        unsigned i = ((x % dw)+(y % dh)*dw)*3;
+        return rgb_t{ dither_ptr[i+0], dither_ptr[i+1], dither_ptr[i+2] };
+    };
+
+    auto const get_dither_lerp = [&](unsigned x, unsigned y) -> rgb_t
+    {
+        float nx = normal_image.GetRed(x, y) - 128.0f;
+        float ny = normal_image.GetGreen(x, y) - 128.0f;
+        float nz = normal_image.GetBlue(x, y);
+
+        float fx = float(x) / (iscale);
+        float fy = float(y) / (iscale);
+
+        float dx = std::fmod(fx, 1.0f);
+        float dy = std::fmod(fy, 1.0f);
+
+        x = std::floor(fx);
+        y = std::floor(fy);
+
+        rgb_t nw = get_dither(x+0, y+0);
+        rgb_t ne = get_dither(x+1, y+0);
+        rgb_t sw = get_dither(x+0, y+1);
+        rgb_t se = get_dither(x+1, y+1);
+
+        rgb_t n, s;
+
+        n.r = nw.r*(1.0f - dx) + ne.r*dx;
+        n.g = nw.g*(1.0f - dx) + ne.g*dx;
+        n.b = nw.b*(1.0f - dx) + ne.b*dx;
+
+        s.r = sw.r*(1.0f - dx) + se.r*dx;
+        s.g = sw.g*(1.0f - dx) + se.g*dx;
+        s.b = sw.b*(1.0f - dx) + se.b*dx;
+
+        rgb_t a;
+        a.r = n.r*(1.0f - dy) + s.r*dy;
+        a.g = n.g*(1.0f - dy) + s.g*dy;
+        a.b = n.b*(1.0f - dy) + s.b*dy;
+
+        return a;
+    };
+
+    for(int py = 0; py < h; py += 1)
+    for(int px = 0; px < w; px += 1)
+    {
+        region_scores.clear();
+        region_scores.resize(color_knobs.size());
+
+        region_q.clear();
+        region_q.resize(color_knobs.size());
+
+        region_q_count.clear();
+        region_q_count.resize(color_knobs.size());
+
+        for(int sy = py * rh; sy < std::min<int>(py * rh + rh, bh); sy += 1)
+        for(int sx = px * rw; sx < std::min<int>(px * rw + rw, bw); sx += 1)
         {
-            unsigned const map_i = &pair - &map.container[0];
+            color_scores.clear();
+            color_scores.resize(color_knobs.size() * MAP_SIZE, INFINITY);
 
-            for(unsigned py = iy; py < std::min<unsigned>(iy+8, h); py += 1)
-            for(unsigned px = ix; px < std::min<unsigned>(ix+8, w); px += 1)
+            float score = INFINITY;
+            unsigned best_knob = 0;
+            qerr_t best_q = {};
+
+            for(unsigned k = 0; k < color_knobs.size(); k += 1)
             {
-                region_scores.clear();
-                region_scores.resize(pair.first.size());
+                auto const& knob = color_knobs[k];
 
-                for(unsigned sy = py * rh; sy < std::min<unsigned>(py * rh + rh, bh); sy += 1)
-                for(unsigned sx = px * rw; sx < std::min<unsigned>(px * rw + rw, bw); sx += 1)
+                if(knob.nes_color >= 64)
+                    continue;
+
+                for(unsigned i = 0; i < knob.map_colors.size(); i += 1)
                 {
-                    color_scores.clear();
-                    for(color_knob_t const& knob : pair.first)
-                        color_scores.push_back(pixel_score(knob.color, get_src(sx, sy)) - knob.greedf());
+                    if(!knob.map_enable[i])
+                        continue;
 
-                    // OK! Found the best color for this src pixel.
-                    auto it = std::ranges::min_element(color_scores.begin(), color_scores.end());
-                    unsigned const best_index = it - color_scores.begin();
-                    color_knob_t const& best_knob = pair.first.container[best_index];
+                    qerr_t q = qerr(knob.map_colors[i], get_src(sx, sy));
 
-                    // Record the score of the src region:
-                    float score = 1.0 / std::max<float>(0.125, *it);
-                    region_scores[best_index] += best_knob.bleedf() * score;
+                    q.r *= knob.greedf();
+                    q.g *= knob.greedf();
+                    q.b *= knob.greedf();
+
+                    if(dither_style)
+                    {
+                        if(dither_style <= LAST_DIFFUSION)
+                        {
+                            q.r += qerrs[px + py*w].r * dscale;
+                            q.g += qerrs[px + py*w].g * dscale;
+                            q.b += qerrs[px + py*w].b * dscale;
+                        }
+                        else if(dither_image.IsOk())
+                        {
+                            rgb_t d = get_dither_lerp(px, py);
+                            float s = (40 - dither_scale) / 40.0f;
+                            q.r += std::round(float(int(d.r) - 128) * s);
+                            q.g += std::round(float(int(d.g) - 128) * s);
+                            q.b += std::round(float(int(d.b) - 128) * s);
+                        }
+                    }
+
+                    float const dist = distance(q);
+
+                    float new_score = std::min<float>(score, dist);
+                    if(new_score < score)
+                    {
+                        score = new_score;
+                        best_knob = k;
+                        best_q = q;
+                    }
                 }
+            }
 
-                // Find the best color for this src region:
-                auto it = std::ranges::max_element(region_scores.begin(), region_scores.end());
-                unsigned const best_index = it - region_scores.begin();
-                color_knob_t const& best_knob = pair.first.container[best_index];
+            region_scores[best_knob] += color_knobs[best_knob].bleedf() / std::max<float>(score, 1);
+            region_q[best_knob].r += best_q.r;
+            region_q[best_knob].g += best_q.g;
+            region_q[best_knob].b += best_q.b;
+            region_q_count[best_knob] += 1;
+        }
 
-                // Record it:
-                chosen_pixels[map_i][(px % 8) + (py % 8)*8] = best_knob.color;
+        auto it = std::ranges::max_element(region_scores.begin(), region_scores.end());
+        unsigned const best_index = it - region_scores.begin();
+        color_knob_t const& best_knob = color_knobs[best_index];
 
-                // Track it on attr_scores:
-                attr_scores[map_i] += pixel_score(best_knob.color, get_scaled(px, py)) - best_knob.greedf();
+        if(best_knob.nes_color < 64)
+        {
+            at_dst_nes(px, py) = best_knob.nes_color;
+
+            if(dither_style)
+            {
+                // Calculate the average error:
+                qerr_t q = region_q[best_index];
+                q.r /= region_q_count[best_index];
+                q.g /= region_q_count[best_index];
+                q.b /= region_q_count[best_index];
+
+                if(std::abs(q.r) < dither_cutoff * 8)
+                    q.r = 0;
+                if(std::abs(q.g) < dither_cutoff * 8)
+                    q.g = 0;
+                if(std::abs(q.b) < dither_cutoff * 8)
+                    q.b = 0;
+
+                auto const distribute = [&](int x, int y, float scale)
+                {
+                    x += px;
+                    y += py;
+                    if(x < 0 || x >= w || y < 0 || y >= h)
+                        return;
+                    qerrs[x + y*w].r += q.r * scale;
+                    qerrs[x + y*w].g += q.g * scale;
+                    qerrs[x + y*w].b += q.b * scale;
+                };
+
+                auto const distribute_chunky = [&](int x, int y, float scale)
+                {
+                    for(int i = 0; i < 2; i += 1)
+                    for(int j = 0; j < 2; j += 1)
+                        distribute(x*2 + i, y*2 + j, scale * 0.25);
+                };
+
+                // Diffuse the error:
+                switch(dither_style)
+                {
+                default:
+                    break;
+                case DITHER_WAVES:
+                    distribute(0, 1, 0.75);
+                    distribute(1, 1, 0.25);
+                    break;
+                case DITHER_FLOYD:
+                    distribute( 1, 0, 7.0 / 16.0);
+                    distribute(-1, 1, 3.0 / 16.0);
+                    distribute( 0, 1, 5.0 / 16.0);
+                    distribute( 0, 2, 1.0 / 16.0);
+                    break;
+                case DITHER_HORIZONTAL:
+                    if(py & 1)
+                    {
+                        distribute(0, 1, 0.75);
+                        distribute(1, 1, 0.25);
+                    }
+                    else
+                    {
+                        distribute(1, 0, 0.25);
+                        distribute(2, 0, 0.75);
+                    }
+                    break;
+                case DITHER_VAN_GOGH:
+                    distribute_chunky( 1, 0, 7.0 / 16.0);
+                    distribute_chunky(-1, 1, 3.0 / 16.0);
+                    distribute_chunky( 0, 1, 5.0 / 16.0);
+                    distribute_chunky( 0, 2, 1.0 / 16.0);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Cellular automata:
+    for(int i = 0; i < 1; i += 1)
+    {
+        if(cull_zags)
+        {
+            for(int py = 0; py < h - 1; py += 1)
+            for(int px = 0; px < w - 2; px += 1)
+            {
+                std::uint8_t tl = at_dst_nes(px+0, py+0);
+                std::uint8_t tc = at_dst_nes(px+1, py+0);
+                std::uint8_t tr = at_dst_nes(px+2, py+0);
+                std::uint8_t bl = at_dst_nes(px+0, py+1);
+                std::uint8_t bc = at_dst_nes(px+1, py+1);
+                std::uint8_t br = at_dst_nes(px+2, py+1);
+
+                if(tc == bc)
+                    continue;
+
+                int eq = 0;
+                eq += tl == bc;
+                eq += bl == tc;
+                eq += tr == bc;
+                eq += br == tc;
+
+                eq += tl != tc;
+                eq += bl != bc;
+                eq += tr != tc;
+                eq += br != bc;
+
+                if(eq < 7)
+                    continue;
+
+                std::swap(at_dst_nes(px+1, py+0), at_dst_nes(px+1, py+1));
             }
         }
 
-        // Find the best attribute combo for this dst region:
-        auto it = std::ranges::min_element(attr_scores.begin(), attr_scores.end());
-        unsigned const best_index = it - attr_scores.begin();
-        unsigned const attr_pair = map.container[best_index].second;
+        if(cull_dots)
+        {
+            fc::vector_map<std::uint8_t, int> c_map;
+            std::vector<std::uint8_t> new_nes = dst_nes;
 
-        // Write the pixels to the destination:
-        for(unsigned py = iy; py < std::min<unsigned>(iy+8, h); py += 1)
-        for(unsigned px = ix; px < std::min<unsigned>(ix+8, w); px += 1)
-            set_dst(px, py, nes_colors[chosen_pixels[best_index][(px % 8) + (py % 8)*8]]);
+            for(int py = 0; py < h; py += 1)
+            for(int px = 0; px < w; px += 1)
+            {
+                c_map.clear();
+                std::uint8_t color = at_dst_nes(px, py);
+
+                auto const get_neighbor = [&](int x, int y) -> std::uint8_t
+                {
+                    x += px;
+                    y += py;
+                    if(x < 0 || y < 0 || x >= w || y >= h)
+                        return 0xFF;
+                    return at_dst_nes(x, y);
+                };
+
+                auto const check_neighbor = [&](int x, int y, int weight)
+                {
+                    auto n = get_neighbor(x, y);
+                    if(n < 64)
+                        c_map[n] += weight;
+                };
+
+                check_neighbor(-1, -1, 1);
+                check_neighbor( 1, -1, 1);
+                check_neighbor(-1,  1, 1);
+                check_neighbor( 1,  1, 1);
+
+                check_neighbor(-1,  0, 16);
+                check_neighbor( 1,  0, 16);
+                check_neighbor( 0, -1, 8);
+                check_neighbor( 0,  1, 8);
+
+                if(c_map[color] == 0)
+                {
+                    auto it = std::ranges::max_element(c_map.container.begin(), c_map.container.end(), 
+                                                       [&](auto const& a, auto const& b) { return a.second < b.second; });
+                    if(it->second >= 32)
+                        color = it->first;
+                }
+
+                new_nes[px + py * w] = color;
+            }
+
+            std::swap(dst_nes, new_nes);
+        }
+
+        if(cull_pipes)
+        {
+            fc::vector_map<std::uint8_t, int> c_map;
+            std::vector<std::uint8_t> new_nes = dst_nes;
+
+            for(int py = 0; py < h-1; py += 1)
+            for(int px = 0; px < w; px += 1)
+            {
+                std::uint8_t color = at_dst_nes(px, py);
+
+                if(color != at_dst_nes(px, py+1))
+                    continue;
+
+                c_map.clear();
+
+                auto const get_neighbor = [&](int x, int y) -> std::uint8_t
+                {
+                    x += px;
+                    y += py;
+                    if(x < 0 || y < 0 || x >= w || y >= h)
+                        return 0xFF;
+                    return at_dst_nes(x, y);
+                };
+
+                auto const check_neighbor = [&](int x, int y, int weight)
+                {
+                    auto n = get_neighbor(x, y);
+                    if(n < 64)
+                        c_map[n] += weight;
+                };
+
+                check_neighbor(-1, -1, 1);
+                check_neighbor( 1, -1, 1);
+                check_neighbor(-1,  2, 1);
+                check_neighbor( 1,  2, 1);
+
+                check_neighbor(-1,  0, 16);
+                check_neighbor( 1,  0, 16);
+                check_neighbor(-1,  1, 16);
+                check_neighbor( 1,  1, 16);
+                check_neighbor( 0, -1, 8);
+                check_neighbor( 0,  2, 8);
+
+                if(c_map[color] == 0)
+                {
+                    auto it = std::ranges::max_element(c_map.container.begin(), c_map.container.end(), 
+                                                       [&](auto const& a, auto const& b) { return a.second < b.second; });
+                    if(it->second >= 64)
+                        color = it->first;
+                }
+
+                new_nes[px + py * w] = color;
+                new_nes[px + (py+1) * w] = color;
+            }
+
+            std::swap(dst_nes, new_nes);
+        }
+
+        std::array<std::uint8_t, 4> matched;
+        std::vector<int> a_x, a_y, b_x, b_y;
+
+        if(clean_lines)
+        {
+            for(int py = 0; py < h; py += 1)
+            for(int px = 0; px < w; px += 1)
+            {
+                auto const pattern_match = [&](int pw, int ph, bool flip_x, bool flip_y, char const* pattern)
+                {
+                    for(int my = 0; my <= int(flip_y); my += 1)
+                    for(int mx = 0; mx <= int(flip_x); mx += 1)
+                    {
+                        a_x.clear();
+                        a_y.clear();
+                        b_x.clear();
+                        b_y.clear();
+                        matched.fill(0xFF);
+
+                        for(int iy = 0; iy < ph; iy += 1)
+                        for(int ix = 0; ix < pw; ix += 1)
+                        {
+                            int x, y;
+
+                            if(mx)
+                                x = px + pw - ix - 1;
+                            else
+                                x = px + ix;
+
+                            if(my)
+                                y = py + ph - iy - 1;
+                            else
+                                y = py + iy;
+
+                            if(x >= w)
+                                goto next_iter;
+                            if(y >= h)
+                                goto next_iter;
+
+                            std::uint8_t p = pattern[ix + iy*pw];
+                            if(p == 'A')
+                            {
+                                a_x.push_back(x);
+                                a_y.push_back(y);
+                                p = 0;
+                            }
+                            else if(p == 'B')
+                            {
+                                b_x.push_back(x);
+                                b_y.push_back(y);
+                                p = 0;
+                            }
+                            else
+                                p -= '0';
+                            std::uint8_t const c = at_dst_nes(x, y);
+
+                            if(p < matched.size())
+                            {
+                                if(matched[p] >= 64)
+                                    matched[p] = c;
+                                else if(matched[p] != c)
+                                    goto next_iter;
+                            }
+                        }
+
+                        if(matched[0] >= 64)
+                            goto next_iter;
+
+                        for(unsigned i = 1; i < matched.size(); i += 1)
+                            if(matched[0] == matched[i])
+                                goto next_iter;
+
+                        if(matched[1] < 64)
+                        {
+                            for(int i = 0; i < a_x.size(); i += 1)
+                            {
+                                assert(at_dst_nes(a_x[i], a_y[i]) != matched[1]);
+                                at_dst_nes(a_x[i], a_y[i]) = matched[1];
+                            }
+                        }
+
+                        if(matched[2] < 64)
+                        {
+                            for(int i = 0; i < b_x.size(); i += 1)
+                            {
+                                assert(at_dst_nes(b_x[i], b_y[i]) != matched[2]);
+                                at_dst_nes(b_x[i], b_y[i]) = matched[2];
+                            }
+                        }
+
+                    next_iter:;
+                    }
+                };
+
+                pattern_match(
+                    4, 4, true, true,
+                    ".022"
+                    "1A02"
+                    "11A0"
+                    ".11.");
+
+                pattern_match(
+                    3, 4, true, false,
+                    "111"
+                    "0A1"
+                    "200"
+                    "222");
+
+                pattern_match(
+                    4, 3, false, true,
+                    "1022"
+                    "1A02"
+                    "1102");
+
+                pattern_match(
+                    4, 4, true, false,
+                    "1111"
+                    "00A1"
+                    "2B00"
+                    "2222");
+
+                pattern_match(
+                    4, 4, false, true,
+                    "1022"
+                    "10B2"
+                    "1A02"
+                    "1102");
+            }
+        }
     }
+
+    for(int py = 0; py < h; py += 1)
+    for(int px = 0; px < w; px += 1)
+        set_dst(px, py, nes_colors[at_dst_nes(px, py)]);
 
     if(output_image.IsOk())
         output_bitmap = wxBitmap(output_image);
@@ -236,127 +642,149 @@ void model_t::update()
         std::fprintf(stderr, "Unable to bitmap output image.\n");
 }
 
-void model_t::read_file(FILE* fp)
+void model_t::auto_color(unsigned count, bool map)
 {
-    std::vector<std::uint8_t> bytes = read_binary_file(fp);
-    base_image = png_to_image(bytes.data(), bytes.size());
-    update();
-}
+    color_knobs = {};
+    if(count == 0)
+        return;
+    if(!base_image.IsOk())
+        return;
 
+    count = std::min<unsigned>(count, color_knobs.size());
 
-void model_t::write_file(FILE* fp) const
-{
-    /*
-    base_path.remove_filename();
+    unsigned char* const src_ptr = base_image.GetData();
 
-    auto const write_str = [&](std::string const& str)
+    unsigned bw = base_image.GetWidth();  // base width
+    unsigned bh = base_image.GetHeight(); // base height
+
+    auto const get_src = [&](unsigned x, unsigned y) -> rgb_t
     {
-        if(!str.empty())
-            std::fwrite(str.c_str(), str.size(), 1, fp);
-        std::fputc(0, fp);
+        unsigned i = (x+y*bw)*3;
+        return rgb_t{ src_ptr[i+0], src_ptr[i+1], src_ptr[i+2] };
     };
 
-    auto const write8 = [&](std::uint8_t i)
+    struct bucket_t
     {
-        std::fputc(i & 0xFF, fp);
+        int range;
+        std::uint8_t rgb_t::*channel;
+        std::vector<rgb_t> colors;
+
+        auto operator<=>(bucket_t const& o) const { return range <=> o.range; }
     };
 
-    auto const write16 = [&](std::uint16_t i)
+    std::vector<bucket_t> buckets;
+
+    auto const set_bucket_range = [](bucket_t& bucket)
     {
-        std::fputc(i & 0xFF, fp); // Lo
-        std::fputc((i >> 8) & 0xFF, fp); // Hi
-    };
-
-    std::fwrite("MapFab", 7, 1, fp);
-
-    // Version:
-    write8(SAVE_VERSION);
-
-    // Collision file:
-    write_str(std::filesystem::proximate(collision_path, base_path).generic_string());
-
-    // CHR:
-    write8(chr_files.size() & 0xFF);
-    for(auto const& file : chr_files)
-    {
-        write_str(file.name);
-        write_str(std::filesystem::proximate(file.path, base_path).generic_string());
-    }
-
-    // Palettes:
-    write8(palette.color_layer.num & 0xFF);
-    for(std::uint8_t data : palette.color_layer.tiles)
-        write8(data);
-
-    // Metatiles:
-    write8(metatiles.size() & 0xFF);
-    for(auto const& mt : metatiles)
-    {
-        write_str(mt->name.c_str());
-        write_str(mt->chr_name.c_str());
-        write8(mt->palette & 0xFF);
-        write8(mt->num & 0xFF);
-        for(std::uint8_t data : mt->chr_layer.tiles)
-            write8(data);
-        for(std::uint8_t data : mt->chr_layer.attributes)
-            write8(data);
-        for(std::uint8_t data : mt->collision_layer.tiles)
-            write8(data);
-    }
-
-    // Object classes:
-    write8(object_classes.size() & 0xFF);
-    for(auto const& oc : object_classes)
-    {
-        write_str(oc->name.c_str());
-        write8(oc->color.r & 0xFF);
-        write8(oc->color.g & 0xFF);
-        write8(oc->color.b & 0xFF);
-        write8(oc->fields.size() & 0xFF);
-        for(auto const& field : oc->fields)
+        if(bucket.colors.empty())
         {
-            write_str(field.name.c_str());
-            write_str(field.type.c_str());
+            bucket.range = 0;
+            bucket.channel = 0;
+            return;
         }
+
+        rgb_t min = { 255, 255, 255 };
+        rgb_t max = { 0, 0, 0 };
+        for(rgb_t const& rgb : bucket.colors)
+        {
+            min.r = std::min(min.r, rgb.r);
+            min.g = std::min(min.g, rgb.g);
+            min.b = std::min(min.b, rgb.b);
+
+            max.r = std::max(max.r, rgb.r);
+            max.g = std::max(max.g, rgb.g);
+            max.b = std::max(max.b, rgb.b);
+        }
+
+        rgb_t const dist = { max.r - min.r, max.g - min.g, max.b - min.b };
+
+        if(dist.r >= dist.g && dist.r >= dist.b)
+        {
+            bucket.range = dist.r;
+            bucket.channel = &rgb_t::r;
+        }
+        else if(dist.g >= dist.r && dist.g >= dist.b)
+        {
+            bucket.range = dist.g;
+            bucket.channel = &rgb_t::g;
+        }
+        else
+        {
+            bucket.range = dist.b;
+            bucket.channel = &rgb_t::b;
+        }
+    };
+
+    auto& initial = buckets.emplace_back();
+    for(unsigned y = 0; y < bh; y += 1)
+    for(unsigned x = 0; x < bw; x += 1)
+        initial.colors.push_back(get_src(x, y));
+    set_bucket_range(initial);
+
+    while(buckets.size() < count)
+    {
+        buckets.reserve(buckets.size() + 1);
+        auto m = std::max_element(buckets.begin(), buckets.end());
+
+        std::sort(m->colors.begin(), m->colors.end(), [&](rgb_t const& a, rgb_t const& b)
+            { return a.*(m->channel) < b.*(m->channel); });
+
+        auto& new_bucket = buckets.emplace_back();
+        new_bucket.colors.assign(m->colors.begin() + m->colors.size() / 2, m->colors.end());
+        m->colors.resize(m->colors.size() / 2);
+        set_bucket_range(*m);
+        set_bucket_range(new_bucket);
     }
 
-    // Levels:
-    write8(levels.size() & 0xFF);
-    for(auto const& level : levels)
+    // Now assign colors:
+    for(unsigned i = 0; i < buckets.size(); i += 1)
     {
-        write_str(level->name.c_str());
-        write_str(level->macro_name.c_str());
-        write_str(level->chr_name.c_str());
-        write8(level->palette & 0xFF);
-        write_str(level->metatiles_name.c_str());
-        write8(level->dimen().w & 0xFF);
-        write8(level->dimen().h & 0xFF);
-        for(std::uint8_t data : level->metatile_layer.tiles)
-            write8(data);
-        write16(level->objects.size());
-        for(auto const& obj : level->objects)
+        auto const& bucket = buckets[i];
+
+        qerr_t avg = {};
+        for(rgb_t const& rgb : bucket.colors)
         {
-            write_str(obj.name.c_str());
-            write_str(obj.oclass.c_str());
-            write16(obj.position.x);
-            write16(obj.position.y);
-            for(auto const& oc : object_classes)
+            avg.r += rgb.r;
+            avg.g += rgb.g;
+            avg.b += rgb.b;
+        }
+
+        if(bucket.colors.size())
+        {
+            avg.r /= bucket.colors.size();
+            avg.g /= bucket.colors.size();
+            avg.b /= bucket.colors.size();
+        }
+
+        unsigned best_color = 0xFF;
+        float best_dist = ~0u;
+        for(unsigned c = 0; c < 64; c += 1)
+        {
+
+            qerr_t d = avg;
+            d.r -= nes_colors[c].r;
+            d.g -= nes_colors[c].g;
+            d.b -= nes_colors[c].b;
+            float dist = distance(d);
+
+            for(unsigned j = 0; j < i; j += 1)
+                if(nes_colors[color_knobs[j].nes_color] == nes_colors[c])
+                    goto skip;
+
+            if(dist < best_dist)
             {
-                if(oc->name == obj.oclass)
-                {
-                    for(auto const& field : oc->fields)
-                    {
-                        auto it = obj.fields.find(field.name);
-                        if(it != obj.fields.end())
-                            write_str(it->second);
-                        else
-                            write8(0);
-                    }
-                    break;
-                }
+                best_dist = dist;
+                best_color = c;
             }
+        skip:;
         }
+
+        color_knobs[i].nes_color = best_color;
+        if(map)
+            color_knobs[i].map_colors[0] = rgb_t{ avg.r, avg.g, avg.b };
+        else
+            color_knobs[i].map_colors[0] = nes_colors[best_color];
+        color_knobs[i].map_enable[0] = true;
     }
-    */
 }
 

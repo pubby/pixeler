@@ -27,11 +27,23 @@ inline std::string color_string(std::uint8_t color)
     return result;
 }
 
+constexpr unsigned MAP_SIZE = 4;
+
 struct color_knob_t
 {
-    std::uint8_t color = 0xFF;
+    std::uint8_t nes_color = 0xFF;
+    std::array<rgb_t, MAP_SIZE> map_colors;
+    std::array<bool, MAP_SIZE> map_enable;
     int greed = 0;
     int bleed = 0;
+
+    bool any_enabled() const 
+    {
+        for(bool b : map_enable)
+            if(b)
+                return true;
+        return false;
+    }
 
     bool set_greed(int v)
     {
@@ -49,42 +61,69 @@ struct color_knob_t
         return true;
     }
 
-    float greedf() const { return greed * 8.0f; }
+    float greedf() const { return std::powf(1.1, -greed); }
     float bleedf() const { return std::powf(2.0, bleed); }
 
     auto operator<=>(color_knob_t const&) const = default;
+};
+
+enum dither_style_t
+{
+    DITHER_NONE,
+    DITHER_WAVES,
+    DITHER_FLOYD,
+    DITHER_HORIZONTAL,
+    DITHER_VAN_GOGH,
+    DITHER_Z1,
+    DITHER_CZ2,
+    DITHER_BRIX,
+    DITHER_CUSTOM,
+    NUM_DITHER,
+    LAST_DIFFUSION = DITHER_VAN_GOGH,
+    FIRST_MASK = DITHER_Z1,
+    NUM_MASK_DITHERS = NUM_DITHER - FIRST_MASK,
 };
 
 struct model_t
 {
     model_t();
 
-    bool display = false;
     int w = 256;
     int h = 256;
 
-    std::array<wxBitmap, 65> color_bitmaps; 
-    std::array<color_knob_t, 25> color_knobs;
+    bool display = false;
+    bool cull_dots = false;
+    bool cull_pipes = false;
+    bool cull_zags = false;
+    bool clean_lines = false;
 
-    color_knob_t u_color;
-    std::vector<std::array<color_knob_t, 3>> b_colors;
-    std::vector<std::array<color_knob_t, 3>> s_colors;
+    dither_style_t dither_style = DITHER_NONE;
+    int dither_scale = 0;
+    int dither_cutoff = 0;
+
+    std::array<wxBitmap, 65> color_bitmaps; 
+    std::array<color_knob_t, 16> color_knobs;
 
     wxStatusBar* status_bar = nullptr;
 
-    std::filesystem::path base_image_path;
     wxImage base_image;
     wxBitmap base_bitmap;
+
+    wxImage picker_image;
+    wxBitmap picker_bitmap;
+
+    std::array<wxImage, NUM_MASK_DITHERS> dither_images;
 
     std::filesystem::path output_image_path;
     wxImage output_image;
     wxBitmap output_bitmap;
 
+    std::string save_path;
+
     void update();
     void update_bitmaps();
 
-    void read_file(FILE* fp);
-    void write_file(FILE* fp) const;
+    void auto_color(unsigned count, bool map);
 };
 
 #endif

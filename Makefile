@@ -23,7 +23,7 @@ endef
 
 SRCDIR:=src
 OBJDIR:=obj
-IMGDIR:=img
+IMGDIR:=dither
 INCS:=-I$(SRCDIR)
 
 VERSION := "0.5"
@@ -65,14 +65,13 @@ LDLIBS:= `$(WXCONFIG) --libs`
 
 SRCS:= \
 main.cpp \
-model.cpp \
-convert.cpp \
-lodepng/lodepng.cpp
+model.cpp
 
 IMGS:= \
-dropper.png \
-stamp.png \
-select.png
+z1.png \
+cz332.png \
+brix.png \
+custom.png
 
 OBJS := $(foreach o,$(SRCS),$(OBJDIR)/$(o:.cpp=.o))
 DEPS := $(foreach o,$(SRCS),$(OBJDIR)/$(o:.cpp=.d))
