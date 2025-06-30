@@ -589,7 +589,7 @@ class frame_t : public wxFrame
 {
 public:
     frame_t()
-    : wxFrame(nullptr, wxID_ANY, "Pixeler", wxDefaultPosition, wxSize(1024, 768))
+    : wxFrame(nullptr, wxID_ANY, "NES Pixeler", wxDefaultPosition, wxSize(1024, 768))
     {
         SetSize(wxSize(1024, 768));
         wxMenu* menu_file = new wxMenu;
