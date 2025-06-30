@@ -21,3 +21,7 @@ To build in debug mode, run:
 To build in release mode, run:
 
     make release
+
+You may need to pull the submodules first:
+
+    git submodule init
