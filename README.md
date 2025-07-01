@@ -4,7 +4,11 @@ A small tool to quantize images into the NES color palette.
 
 ## License
 
-- MapFab is licensed under GPL 3.0 (see `COPYING`).
+- NES Pixeler is licensed under GPL 3.0 (see `COPYING`).
+
+## Tutorial
+
+See: https://www.youtube.com/watch?v=mVBX6pp75is
 
 ## Building
 
